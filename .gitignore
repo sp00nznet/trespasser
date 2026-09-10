@@ -1,0 +1,64 @@
+# Build artifacts
+build/
+out/
+cmake-build-*/
+*.obj
+*.o
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+CMakeSettings.json
+CMakeUserPresets.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Scratch / regeneratable analysis output
+_work/
+analysis/
+*.json.bak
+
+# Generated recompiled code
+src/recomp/gen/
+
+# --- Original retail game files: NOT redistributed in this repo ---
+# Trespasser (c) 1998 DreamWorks Interactive / Electronic Arts. Copyright
+# subsists. All original binaries and assets stay local-only. Bring your own
+# disc: drop the ISO in the project root and run tools/extract_iso.py.
+_iso/
+*.iso
+*.ISO
+*.exe
+*.EXE
+*.dll
+*.DLL
+*.tpa
+*.TPA
+*.scn
+*.SCN
+*.grf
+*.GRF
+*.swp
+*.pid
+*.spz
+*.smk
+*.wtd
+
+# Reference source (leaked; never vendored — see docs/LEGAL.md)
+_ref/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
