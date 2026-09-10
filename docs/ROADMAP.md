@@ -5,30 +5,34 @@ Classify → Lift → Shim → Build → Debug → Ship**. What changes per proj
 where the time goes. This page says where it goes for Trespasser, and what
 "done" looks like at each step.
 
-## Why this project is unusual
+## What we are actually building
 
-Trespasser is the first target in the family where **the original source code is
-publicly circulating**. Community forks exist ([OpenTrespasser], [VideogameSources]).
-That changes the value of the exercise, so it is worth being blunt about it:
+Two things, and the order matters:
 
-- If the goal were only "play Trespasser on Windows 11", the shortest path is a
-  source port, and one already exists. This project is not that.
-- What a recompilation gets you that a source port does not is a **build derived
-  from the shipped retail binary** — the code that actually went in the box, with
-  its actual compiler output, self-modifying rasterisers and all.
-- And uniquely here, we get a **ground-truth oracle**. Every other project in the
-  family has to guess whether a lifted function is semantically right. This one
-  can check. That makes Trespasser the best available test case for the pcrecomp
-  lifter itself, and improvements found here flow back to every other project.
+1. **A measured audit of the pcrecomp toolchain**, against a target where the
+   answer is checkable. This is the deliverable.
+2. **A running Trespasser built from the retail binary.** This is how we prove
+   the audit, and it is the thing that forces every stage of the toolchain to be
+   exercised honestly rather than sampled.
 
-So the deliverable is two things: a running Trespasser built from the binary,
-and a lifter measurably validated against known-correct semantics.
+Every other target in the family has been a dig into the unknown. The
+Quake-family set had public SDKs, which only ever told us about the SDK parts —
+the custom engine stayed opaque. We have never held a lifted function up next to
+what it was supposed to be. Trespasser is the first target where we can.
 
-The source is used as a **read-only oracle**, kept out of this repo entirely.
-See [LEGAL.md](LEGAL.md).
+Method and metrics: [VALIDATION.md](VALIDATION.md). Results:
+[SCORECARD.md](SCORECARD.md). The rule that makes it worth anything is that the
+binary-derived claim gets written down **before** the oracle is consulted.
 
-[OpenTrespasser]: https://github.com/OpenTrespasser/JurassicParkTrespasser
-[VideogameSources]: https://github.com/VideogameSources/Trespasser
+The strongest oracle is not the source tree — it is a binary we build from it
+with debug info, whose PDB names every function, its exact address and size, and
+its source file. That turns every stage into a precision/recall measurement
+instead of an impression. The source tree itself is the weaker oracle and comes
+with a caveat that must be repeated every time it is used: it is the
+*development* tree, not what was compiled into `tpassp6.exe`. Where they
+disagree, the binary is right.
+
+The source is read-only, never vendored. See [LEGAL.md](LEGAL.md).
 
 ## Which build
 
@@ -124,6 +128,30 @@ and we have a ranked list of what must be lifted versus what can be shimmed.
 
 ---
 
+## Phase 2.5 — Stand up the oracle
+
+Runs in parallel with Phase 2; it gates the scoring, not the lifting.
+
+- [ ] Build the community tree's CMake project with debug info. Record what it
+      took — a build that needs heroics is a build we cannot re-run per commit.
+- [ ] Dump the PDB to a ground-truth table: function name, address, size, source
+      file, line. This is the oracle.
+- [ ] Run the full pcrecomp front end (`pe_analyze` → `disasm32` → `callgraph` →
+      `classify`) over *that* binary and score every stage against the PDB.
+- [ ] Write the numbers into [SCORECARD.md](SCORECARD.md); fix what is broken
+      upstream in pcrecomp before lifting anything.
+- [ ] Settle the open scorecard entries this can settle — in particular #3, the
+      4,223 data-pointer-only functions.
+
+**Done when:** we have precision and recall figures for function recovery and
+call-graph edges on a binary where the answer is known, and we know how much to
+trust the same tools on the retail image.
+
+**Why here:** lifting a binary whose function boundaries are wrong produces
+thousands of lines of confidently incorrect C. Measure the front end first.
+
+---
+
 ## Phase 3 — Lifting
 
 - [ ] Lift `.text` with `lift32_cpu.py` (the reentrant CPU-struct model — the
@@ -141,6 +169,13 @@ and we have a ranked list of what must be lifted versus what can be shimmed.
 - [ ] Validate with `difftest.py` — lifted C against Unicorn over the same bytes,
       comparing every register, flag and byte. Prioritise the physics and
       rasteriser functions.
+- [ ] **Read the lifted C next to the original function.** difftest proves the
+      code does what the *bytes* say; it cannot prove we lifted the right
+      function, or that a pass was a pass for the right reason. This is the only
+      check for that and it does not scale, so spend it deliberately — physics
+      and rasterisers, not spread thin.
+- [ ] Score the `SelfMod` patch-site model against what `DrawSubTriangle`
+      actually patches (scorecard #2).
 
 **Done when:** the whole image lifts with zero errors and difftest is clean on a
 sampled set weighted toward physics and rendering.
@@ -211,13 +246,16 @@ Where most of the calendar time goes, on every project, always.
 
 ---
 
-## Order of work, next five things
+## Order of work, next six things
 
 1. Finish the `.text` disassembly, get the function count. *(running — 4,917
-   candidates found from call targets and prologues; the sweep is slow)*
+   candidates from call targets and prologues, plus 4,223 found only via data
+   pointers; the sweep is slow)*
 2. Confirm the 18 `SelfMod` entry points are entry points, and find the patch
    offsets inside each one. This is the project's one real risk and it now looks
    about twenty routines wide.
 3. Parse RTTI into a real class hierarchy; recover vtables.
 4. Find `WinMain` and the main loop; trace the entry chain.
-5. Decide 1.0 vs 1.1 by diffing `PatchEXEOnly.exe` against `tpassp6.exe`.
+5. Build the reference tree with debug info and dump its PDB — the oracle that
+   settles the open scorecard entries.
+6. Decide 1.0 vs 1.1 by diffing `PatchEXEOnly.exe` against `tpassp6.exe`.

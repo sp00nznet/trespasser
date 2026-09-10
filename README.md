@@ -64,26 +64,66 @@ across eight named sections — `StriCopy`, `StriTex`, `StriGTex`, `StriBump`,
 `StriTerr`, `StriDTer`, `StriWate`. Copy, texture, gouraud-texture, bump,
 terrain, detail terrain, water.
 
-## Why bother, when the source is out there
+## What this project is actually for
 
-Trespasser's development source circulates publicly and community source ports
-exist. So this needs saying up front: **if you just want to play Trespasser on
-Windows 11, go use [OpenTrespasser](https://github.com/OpenTrespasser/JurassicParkTrespasser).**
-That is the short path and it is a good project.
+Every other pcrecomp target has been a dig into something genuinely unknown. The
+Quake-family set (gunman, sof, heavymetal) had public SDKs to classify against,
+which is the closest we have come to checking our work — but an SDK only tells
+you about the parts that came from the SDK. The custom engine, the part that
+matters, stayed a black box. Across fifteen projects we have never once been
+able to hold a lifted function up against what it was supposed to be.
 
-This is a different exercise, worth doing for two reasons:
+Trespasser is the first target where we can see the other side. Its source
+circulates publicly and the community tree carries a working CMake build.
 
-1. **It builds the game that shipped.** Not the development tree — the retail
-   executable, with its actual compiler output and its self-modifying
-   rasterisers, which no source port reproduces.
-2. **It is the only project in this family with a ground-truth oracle.** Every
-   other pcrecomp target has to guess whether a lifted function is semantically
-   correct. Here we can check. That makes Trespasser the best available test case
-   for the lifter itself, and every fix it forces flows back to the other
-   fourteen projects.
+So the deliverable here is not primarily a running game. It is an answer to the
+question we have been carrying the whole time: **does the tooling actually do
+what we think it does?** A running game is how we prove the answer — it is not
+the answer.
 
-The circulating source is used as a read-only naming and validation oracle. It is
-never vendored here and nothing is copied from it — see [LEGAL](docs/LEGAL.md).
+The method, in one line: **run the tools, write down what they claim, then look
+at the other side and score it.** Written down first, or we are not testing the
+tooling, we are reading the source with extra steps.
+
+The strongest oracle is not the source tree at all — it is a binary we build
+ourselves from it. A build with debug info yields a PE *plus a PDB naming every
+function, its exact address and size, and its source file*. Point pcrecomp at
+that and every stage becomes exactly scorable: precision and recall against
+ground truth, computed automatically. Then run the same tools on the retail
+binary, where we do not know the answer, and we finally know how much to trust
+the numbers.
+
+Full method in [VALIDATION.md](docs/VALIDATION.md); results accumulate in
+[SCORECARD.md](docs/SCORECARD.md), and fixes flow upstream into
+[pcrecomp](https://github.com/sp00nznet/pcrecomp).
+
+### It works already
+
+Two datapoints fell out of Phase 0 before this was even the plan.
+
+**`SelfMod`, inferred then confirmed.** From the binary alone we said: not a
+JIT, static code, exec+write because the renderer pokes constants into
+rasteriser span loops. The community tree's build config turns out to carry a
+linker flag `/SECTION:SelfMod,ERW`, commented as required by the self-modifying
+assembly in `DrawSubTriangle`, project `ScreenRenderDWI`. Confirmed — and
+narrowed to a named function and subsystem the binary would not have given up
+for weeks.
+
+**Direct calls are not enough.** Function recovery found 4,917 candidates from
+call targets and prologues, then the data-pointer scan found **4,223 more
+functions reachable only through data pointers** — no direct `call` in the image
+reaches them. Those are virtual methods behind vtables. In a C++ binary with 512
+classes, direct-call-only recovery would miss about half the program. Whether
+4,223 is *correct* is exactly what the PDB oracle is for.
+
+### If you just want to play it
+
+Go use [OpenTrespasser](https://github.com/OpenTrespasser/JurassicParkTrespasser).
+That is the short path and it is a good project. This is a different exercise.
+
+The circulating source is used as a read-only oracle. It is never vendored here,
+nothing is copied from it, and everything committed is derived from the binary —
+see [LEGAL](docs/LEGAL.md).
 
 ## Roadmap
 
@@ -94,6 +134,7 @@ Full detail in [ROADMAP.md](docs/ROADMAP.md). The shape:
 | 0 | **Reconnaissance** — PE, sections, imports, RTTI, formats | ✅ done |
 | 1 | **Disassembly** — function recovery over `.text` and `SelfMod`, call graph | 🔄 running |
 | 2 | **Classification** — RTTI hierarchy, vtable recovery, name the binary | ⬜ |
+| 2.5 | **Stand up the oracle** — build the reference tree, dump its PDB, score the front end against it | ⬜ |
 | 3 | **Lifting** — x86-32 → C, x87, and the `SelfMod` patch-site work | ⬜ |
 | 4 | **Shimming** — Win32→SDL2, DirectDraw→D3D11, hybrid CRT, audio, Smacker | ⬜ |
 | 5 | **Build & debug** — startup, window, menu, level load, first frame, physics | ⬜ |
@@ -105,7 +146,9 @@ Next five things, in order:
 2. Confirm the 18 `SelfMod` entry points and find the patch offsets inside each.
 3. Parse RTTI into a class hierarchy; recover vtables from the type locators.
 4. Find `WinMain` and the main loop.
-5. Decide retail 1.0 vs the 1.1 patch by diffing the two executables.
+5. Build the reference tree with debug info and dump its PDB — the oracle that
+   settles the open scorecard entries.
+6. Decide retail 1.0 vs the 1.1 patch by diffing the two executables.
 
 ## Getting the binary
 
@@ -120,12 +163,13 @@ python tools/recon.py              # regenerates everything in analysis/
 ## Layout
 
 ```
-docs/          RECON, ROADMAP, LEGAL — the written record
+docs/          RECON, ROADMAP, VALIDATION, SCORECARD, LEGAL
 tools/         Project-specific extraction and analysis scripts
 analysis/      Generated: function catalogs, RTTI, call graphs (gitignored)
 config/        Pipeline configuration
 src/           Runtime, shims, and generated code (generated code gitignored)
 _iso/          Your extracted game files (gitignored, never committed)
+_ref/          Reference source, used as an oracle only (gitignored)
 ```
 
 ## Licence
