@@ -12,7 +12,7 @@ not yet checked).
 | # | Tool | Claim from the binary | Oracle | Verdict | Upstream change |
 |---|------|----------------------|--------|---------|-----------------|
 | 1 | *(inference)* | `SelfMod` is not a JIT: static code, exec+write because the renderer pokes constants into rasteriser span loops | Reference build config names self-modifying asm in `DrawSubTriangle` / `ScreenRenderDWI` | **confirmed** | — |
-| 2 | *(inference)* | ~18 patchable rasteriser routines (18 distinct `.text` → `SelfMod` references) | Oracle `SelfMod` holds 35 `DrawSubtriangle` template instantiations | **partial** — mechanism exactly right, count was a floor and undercounts | — |
+| 2 | *(inference)* | ~18 patchable rasteriser routines, counted by absolute `.text` → `SelfMod` references | Oracle holds 35 `DrawSubtriangle` instantiations; re-measuring retail by direct `call rel32` gives **33** | **partial** — mechanism exactly right, counting method was structurally blind | — |
 | 3 | `disasm32.py` | 4,223 functions reachable only via data pointers — a direct-call-only pass would miss 38% of a C++ binary | oracle stood up; see #6, which casts doubt on this | **open** | — |
 | 4 | ISA sweep | The P6 build is pure x87 — no MMX, SSE or 3DNow! | not yet checked | **open** | — |
 | 5 | `disasm32.py` | Predicted superlinear rework in the fixpoint | Measured: O(code^1.10), a constant-factor problem instead | **wrong** | **fixed** — lazy decode, ~20× faster, identical output (pcrecomp `e9d96cb`) |
@@ -109,17 +109,15 @@ settles it.
 
 ---
 
-## #2 — the rasteriser is a template matrix. Mechanism right, count low.
+## #2 — the rasteriser is a template matrix. Mechanism right, method wrong.
 
 **What we claimed from the binary:** ~18 patchable rasteriser routines, from 18
-distinct absolute references in `.text` pointing into `SelfMod`. Stated at the
-time as a floor, because sites reached by a computed address would not appear in
-an absolute-reference count.
+distinct absolute references in `.text` pointing into `SelfMod`. Stated as a
+floor at the time.
 
-**What the oracle shows.** Its `SelfMod` section carries 37 symbols, 35 of them
-instantiations of a single function template — `DrawSubtriangle` — every one
-from `ScreenRenderDWI:DrawSubTriangle.obj`. They are specialised across five
-template axes:
+**What the oracle shows.** Its `SelfMod` carries 37 symbols, 35 of them
+instantiations of one function template — `DrawSubtriangle` — all from
+`ScreenRenderDWI:DrawSubTriangle.obj`, specialised across five axes:
 
 | Axis | Values |
 |------|--------|
@@ -129,30 +127,49 @@ template axes:
 | Index | `CIndexLinear`, `CIndexPerspective`, `CIndexNone` |
 | ColLookup | `CColLookupOn`, `CColLookupOff`, `CColLookupTerrain`, `CColLookupAlphaTexture`, `CColLookupAlphaWater` |
 
-The full cross product is 1,080; only 35 combinations are actually instantiated.
-Routine sizes run 352 to 3,392 bytes, median 816.
+Full cross product 1,080; 35 instantiated. Sizes 352–3,392 bytes, median 816.
 
-**Verdict: partial.** The mechanism claim was exactly right — one specialised
-span loop per rendering configuration, in a writable code section so constants
-can be poked in. What we did not see from the binary is that the specialisation
-is *two-layer*: C++ templates pick the algorithm at compile time, and
-self-modification patches the constants at run time. And the count was low.
+So the specialisation is **two-layer**: templates choose the algorithm at
+compile time, self-modification patches constants at run time. The binary alone
+showed us the second layer and not the first.
 
-**Why 18 undercounts.** The oracle's `SelfMod` is 58,032 bytes for 35 routines,
-about 1,658 bytes each. The retail section is 39,797 bytes, which at that density
-is roughly 24 routines. So the retail figure is probably low-to-mid twenties, not
-18 — the absolute-reference count missed the ones dispatched through a table.
-The 10 references from `.data` we noted at the time are almost certainly that
-table.
+### The counting method was structurally blind
 
-**What this buys Phase 3.** The lifting plan said "find the patch sites and turn
-each patched immediate into a variable". That still holds, but the shape is now
-known: ~24 routines, each a member of a known template family, each small
-(median under a kilobyte). And critically, we can study the mechanism *in the
-oracle with symbols attached* before touching the retail image — a
-`DrawSubtriangle` in the oracle names its own configuration in its mangled
-symbol.
+Seeing the templates immediately explained why 18 was wrong, and it was not
+because it was a floor. A template instantiation is resolved at compile time, so
+its callers reach it with a **direct `call rel32`** — a relative displacement,
+not an address stored anywhere. An absolute-dword scan cannot see those calls in
+principle, no matter how many there are.
 
+Confirmed on the oracle first: scanning its whole image for pointers to the 35
+known `DrawSubtriangle` addresses finds **zero**. There is no dispatch table.
+(Which also kills the guess, recorded here earlier, that the 10 `.data`
+references in retail were that table. They are something else.)
+
+**Re-measured on retail the right way** — scanning `.text` for `E8`/`E9` rel32
+branches landing inside `SelfMod`:
+
+| | |
+|---|---|
+| Direct `call` sites | 267 |
+| **Distinct entry points** | **33** |
+| Direct `jmp` sites | 0 |
+| Entry spacing | min 288, median 640, max 2,720 bytes |
+
+**33 against the oracle's 35**, with routine spacing (288/640/2,720) closely
+tracking the oracle's sizes (352/816/3,392). Two independently derived numbers
+from two different builds of the same code, agreeing. That is the strongest
+cross-validation the project has produced so far.
+
+**Verdict: partial.** Mechanism exactly right. Count wrong, twice — 18 from a
+method that could not see the dispatch, then ~24 from a density estimate. The
+answer is 33, and it took the oracle to reveal *which question to ask*.
+
+**What this buys Phase 3.** 33 routines, each a member of one known template
+family, median well under a kilobyte, all reached by direct calls from 267 known
+sites. The patch sites can be studied in the oracle with symbols attached — each
+routine names its own configuration in its mangled symbol — before the retail
+image is touched.
 
 ## The oracle
 
