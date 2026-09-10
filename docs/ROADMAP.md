@@ -42,6 +42,13 @@ See [LEGAL.md](LEGAL.md).
    bytes against the P5 build's 52,405. That is the hardest part of the project,
    so we take 24% less of it.
 
+Measured after the fact, and it confirms the choice: **the P6 build contains no
+MMX, no SSE and no 3DNow! at all** — it is pure x87. The K6 build would have
+cost roughly 4,000 vector instructions across two instruction sets, one of them
+3DNow!, which this toolchain has never lifted. The bill for choosing P6 is
+113,243 x87 instructions, so the FPU model is now on the critical path. Full
+census in [RECON](RECON.md#instruction-set-census).
+
 Open question deferred to Phase 1: whether to target retail 1.0 (`tpassp6.exe`
 as shipped) or 1.1 (`UPDATE\tresp1_1\PatchEXEOnly.exe`). 1.0 is what we have
 disassembled; 1.1 is what people actually play. Decide once we know how much the
@@ -55,6 +62,15 @@ patch moves. Default is 1.0 — never chase a moving target during bring-up.
 
 Headline: plain MSVC 6 PE32, no DRM, no packer, 297 imports across 11 DLLs,
 513 RTTI type names intact, DirectDraw-only software renderer, CRT external.
+
+Two follow-up measurements landed with it:
+
+- **The target is pure x87.** No MMX, no SSE, no 3DNow!. The lifter needs the
+  integer core and a correct FPU, and nothing else.
+- **The self-modifying surface is about eighteen routines**, not hundreds of
+  sites — 18 distinct addresses in `.text` point into `SelfMod`. That is a floor
+  (computed addresses would not show up), but it takes the project's one real
+  risk from unknown to roughly sized.
 
 ---
 
@@ -70,8 +86,8 @@ trust.
       independent recoveries agreeing is the cheapest confidence available.
 - [ ] Build the call graph; find the entry chain from `0x00626BE2` (CRT startup)
       to `WinMain` and from there to the main loop.
-- [ ] Inventory the instruction set actually used: does the P6 build use MMX?
-      x87 only? This sets the lifter's obligations.
+- [x] ~~Inventory the instruction set actually used.~~ Done in Phase 0: pure
+      x87, no vector ISA. The lifter needs the integer core and the FPU.
 
 **Done when:** every byte of `.text` is either inside a recovered function or
 explained (padding, jump tables, embedded data), and we can name the main loop.
@@ -197,9 +213,11 @@ Where most of the calendar time goes, on every project, always.
 
 ## Order of work, next five things
 
-1. Finish the `.text` disassembly, get the function count. *(running)*
-2. Disassemble `SelfMod` and count its functions and patch sites — this sizes
-   the project's one real risk before we commit to anything else.
+1. Finish the `.text` disassembly, get the function count. *(running — 4,917
+   candidates found from call targets and prologues; the sweep is slow)*
+2. Confirm the 18 `SelfMod` entry points are entry points, and find the patch
+   offsets inside each one. This is the project's one real risk and it now looks
+   about twenty routines wide.
 3. Parse RTTI into a real class hierarchy; recover vtables.
 4. Find `WinMain` and the main loop; trace the entry chain.
 5. Decide 1.0 vs 1.1 by diffing `PatchEXEOnly.exe` against `tpassp6.exe`.

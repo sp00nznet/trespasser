@@ -31,11 +31,18 @@ Built on the [pcrecomp](https://github.com/sp00nznet/pcrecomp) toolchain.
   Direct3D import — this is a software renderer. The C runtime is external
   (`MSVCRT.DLL` + `MSVCIRT.DLL` ship on the disc), which is the shape pcrecomp's
   hybrid boundary was built for.
+- **Pure x87 — no MMX, no SSE, no 3DNow!.** Measured across every executable
+  section. The lifter needs the x86-32 integer core and a correct FPU, and
+  nothing else. The bill is 113,243 x87 instructions, so the FPU model is on the
+  critical path for a physics game.
 - **One genuinely hard thing:** a 39,797-byte `SelfMod` section, marked
   executable *and writable*. It holds the rasteriser inner loops, which the
-  renderer patches constants into before running them.
+  renderer patches constants into before running them. Sized it: **18 distinct
+  addresses in `.text` reach into it**, so this is about twenty patchable
+  routines, not hundreds of scattered sites.
 
-Phase 1 (disassembly and function recovery) is running now.
+Phase 1 (disassembly and function recovery) is running — 4,917 function
+candidates found so far from call targets and prologue patterns.
 
 ## The one hard problem
 
@@ -95,8 +102,7 @@ Full detail in [ROADMAP.md](docs/ROADMAP.md). The shape:
 Next five things, in order:
 
 1. Finish `.text` disassembly; get the function count.
-2. Disassemble `SelfMod`, count its functions and patch sites — this sizes the
-   project's one real risk before committing to anything else.
+2. Confirm the 18 `SelfMod` entry points and find the patch offsets inside each.
 3. Parse RTTI into a class hierarchy; recover vtables from the type locators.
 4. Find `WinMain` and the main loop.
 5. Decide retail 1.0 vs the 1.1 patch by diffing the two executables.

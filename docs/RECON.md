@@ -118,6 +118,72 @@ Plus the named singles that tell you where the interesting code lives:
 
 The full list is regenerated into `analysis/rtti.txt`.
 
+## Instruction set census
+
+Every executable section of both candidate builds, disassembled linearly and
+resumed past undecodable bytes (so this covers the whole section, not just the
+run up to the first bad byte):
+
+| Build | Section | Instructions | x87 | MMX | 3DNow! | SSE |
+|-------|---------|-------------:|----:|----:|-------:|----:|
+| **p6** | `.text`   | 765,150 | 113,243 | 0 | 0 | 0 |
+| **p6** | `SelfMod` | 10,245 | 2,615 | 0 | 0 | 0 |
+| k6 | `.text`   | 723,829 | 89,506 | 1,902 | 2,101 | 0 |
+| k6 | `StriCopy` | 1,087 | 0 | 278 | 96 | 0 |
+| k6 | `StriTex`  | 1,093 | 0 | 270 | 96 | 0 |
+| k6 | `StriGTex` | 1,038 | 0 | 226 | 92 | 0 |
+| k6 | `StriBump` | 1,487 | 0 | 271 | 96 | 0 |
+| k6 | `StriTerr` |   745 | 0 | 132 | 24 | 0 |
+| k6 | `StriDTer` | 1,048 | 0 | 233 | 48 | 0 |
+| k6 | `StriWate` |   856 | 0 | 160 | 100 | 0 |
+| k6 | `SelfMod`  |   819 | 0 | 436 | 48 | 0 |
+
+(A linear sweep decodes some data as instructions, so treat these as close
+upper bounds rather than exact counts. The zeros are the reliable part — a
+false *absence* is not something linear sweep produces.)
+
+**The P6 build is pure x87.** No MMX, no SSE, no 3DNow! anywhere in it. The
+lifter therefore needs exactly two things: the x86-32 integer core, and a
+correct x87. Nothing else.
+
+That settles the build choice with a number rather than a hunch: the K6 build
+would have cost us roughly 4,000 vector instructions across *two* instruction
+sets, one of which (3DNow!) is dead silicon nobody has emulated in this
+toolchain and which we would be implementing from scratch.
+
+The bill for that choice is the 113,243 x87 instructions the P6 build uses
+instead. The x87 stack model has to be genuinely right — not approximately
+right — and it is on the critical path for a physics game. Note also that the
+two builds put the rasterisers in different worlds entirely: K6's `Stri*`
+sections are pure integer SIMD with zero x87, while P6's `SelfMod` is
+float-heavy (2,615 x87 in 10,245 instructions).
+
+## How much self-modification, exactly
+
+Counting every 4-byte little-endian value anywhere in the image that points
+into the `SelfMod` range `0x63B000-0x644B75`:
+
+| Source section | References | Distinct targets |
+|----------------|-----------:|-----------------:|
+| `.text`  | 42 | 18 |
+| `.data`  | 21 | 10 |
+| `.rdata` |  1 |  1 |
+
+**Eighteen distinct addresses in `.text` reach into `SelfMod`**, spread across
+the section from `0x63BF00` to `0x6446C7`.
+
+That is a small number, and it is the shape you would hope for. A patcher does
+not name every byte it pokes — it loads a routine's base address once and writes
+at offsets from it. So 18 absolute references most likely means **18 patchable
+rasteriser routines**, each with a handful of patch offsets inside it, rather
+than hundreds of scattered independent sites. The 10 references from `.data` are
+consistent with a dispatch table of rasteriser entry points.
+
+Caveat worth stating plainly: this counts absolute references only. Any site
+reached purely by computed address would not appear here, so 18 is a floor. It
+still moves the risk from "unknown" to "probably about twenty routines", which
+is what Phase 1 needs to confirm.
+
 ## Data formats to crack
 
 From the disc layout and the binary's own strings:
