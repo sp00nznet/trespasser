@@ -13,47 +13,99 @@ not yet checked).
 |---|------|----------------------|--------|---------|-----------------|
 | 1 | *(inference)* | `SelfMod` is not a JIT: static code, exec+write because the renderer pokes constants into rasteriser span loops | Reference build config names self-modifying asm in `DrawSubTriangle` / `ScreenRenderDWI` | **confirmed** | — |
 | 2 | `disasm32.py` | ~18 patchable rasteriser routines (18 distinct `.text` → `SelfMod` references) | not yet checked | **open** | — |
-| 3 | `disasm32.py` | 4,223 functions reachable only via data pointers — a direct-call-only pass would miss about half a C++ binary | oracle stood up, scoring blocked by #5 | **open** | — |
+| 3 | `disasm32.py` | 4,223 functions reachable only via data pointers — a direct-call-only pass would miss about half a C++ binary | oracle stood up; see #6, which casts doubt on this | **open** | — |
 | 4 | ISA sweep | The P6 build is pure x87 — no MMX, SSE or 3DNow! | not yet checked | **open** | — |
-| 5 | `disasm32.py` | *(performance, not correctness)* | Measured directly | **wrong** | **needed — blocking** |
+| 5 | `disasm32.py` | Predicted superlinear rework in the fixpoint | Measured: O(code^1.10), a constant-factor problem instead | **wrong** | **fixed** — lazy decode, ~20× faster, identical output (pcrecomp `e9d96cb`) |
+| 6 | `disasm32.py` | Round 5 is still slow post-fix; possibly the data scan over-firing on non-code | not yet checked | **open** | — |
 
 ---
 
-## #5 — `disasm32.py` does not scale to multi-megabyte binaries
+## #5 — `disasm32.py` was ~20× slower than it needed to be — **fixed**
 
-The first hard result, and it blocks the project.
+The first hard result, and the first time a hypothesis of ours got checked and
+came back wrong.
 
-**Measured** on `tpassp6.exe`, a 2.5 MB image with 2.37 MB of code:
+### What we predicted
 
-| | |
-|---|---|
-| Wall clock | 3 h 20 m, still not converged |
-| CPU time | 11,350 s (~3 h 9 m), single-threaded |
-| CPU-bound? | Yes — gains ~19 s CPU per 20 s wall. Not deadlocked, not swapping. |
-| Memory | ~1.09 GB, growing slowly and steadily |
-| Progress | Initial 4,917 candidates disassembled, then discovery rounds 1–5. Round 5 (1,472 new targets) ran 27 minutes without emitting its completion line, against roughly 4 minutes per 1,000 candidates earlier. |
+That the fixpoint in `find_functions` was re-walking work it had already done —
+superlinear rework. Written down before measuring, per the rules.
 
-The per-round slowdown is the tell: the same unit of work costs several times
-more in later rounds than in early ones, which points at superlinear behaviour
-in the fixpoint loop rather than at the disassembly itself.
+### What the measurement said
 
-**Why this matters beyond Trespasser.** Every remaining large PC target has an
-image this size or bigger, and the oracle binary we just built is 8.8 MB — 3.5×
-the retail image. At the current curve, scoring the front end against its own
-ground truth is not merely slow, it is not finishable. The audit cannot proceed
-through this.
+`tools/scaling_probe.py` runs the real tool over a ladder of real 32-bit PEs and
+fits an exponent to (code bytes → seconds):
 
-**Hypothesis, not yet confirmed:** the fixpoint in `find_functions` re-walks
-work it has already done. Each candidate calls `disassemble_at(addr,
-max_bytes=8192)`, so ~10,000 candidates across rounds re-decode on the order of
-80 MB of instruction stream per pass, and the `covered` / `owner` bookkeeping is
-rebuilt rather than updated incrementally. Needs profiling before anything is
-changed — the point of this project is measuring, not guessing.
+| Binary | Code bytes | Seconds | ms/byte |
+|--------|-----------:|--------:|--------:|
+| `dxinst.exe` | 10,902 | 41.12 | 3.77 |
+| `Processor.dll` | 15,782 | 75.43 | 4.78 |
+| `dsetup.dll` | 18,476 | 47.27 | 2.56 |
+| `dsetup32.dll` | 35,519 | 149.30 | 4.20 |
+| `SMACKW32.DLL` | 70,146 | 312.44 | 4.45 |
 
-**Status:** the retail run is still going and will be left to converge so we get
-the function count. The fix goes upstream into pcrecomp.
+**Fitted: O(code^1.10).** Essentially *linear*. The hypothesis was wrong — there
+was no algorithmic blowup. What there was is a catastrophic constant factor of
+~4 ms per byte of code: about 250 code bytes per second, from a library that
+decodes megabytes per second. At that rate the retail image's 2.37 MB of code
+predicts 2.6 hours, which is exactly the behaviour observed.
+
+Worth keeping as a lesson: the shape of the symptom (grinding for hours, later
+rounds feeling slower) read as superlinear, and it wasn't. The per-round
+"slowdown" was noise on top of a flat, terrible constant.
+
+### The actual cause
+
+`disassemble_at` materialised its whole window. Both callers in
+`disassemble_function` break out at the first branch, ret or known block leader
+— usually within a handful of instructions — but the function first built an
+`Instruction`, with capstone detail operands, for every one of up to 8 KB of
+decoded bytes, then discarded nearly all of them. Once per block leader, and
+the work is done twice over: leader discovery, then block building.
+
+### The fix
+
+Yield instead of materialise, so each caller pays only for what it consumes. A
+~4-line change. Measured against the pre-fix baselines, with outputs compared
+by SHA256:
+
+| Binary | Before | After | Speedup | Output |
+|--------|-------:|------:|--------:|--------|
+| `dxinst.exe` | 37.69 s | 1.91 s | **19.7×** | identical |
+| `Processor.dll` | 69.64 s | 3.11 s | **22.4×** | identical |
+| `dsetup32.dll` | 142.76 s | 6.70 s | **21.3×** | identical |
+| `dsetup.dll` | 45.26 s | 2.44 s | **18.5×** | identical |
+
+Byte-identical JSON in every case, so this is purely a performance change. The
+one new constraint is that callers must iterate the result at most once; both
+current callers already do.
+
+**Shipped upstream:** pcrecomp commit `e9d96cb`. Every project in the family
+gets it.
 
 ---
+
+## #6 — discovery round 5 is still slow, and it may not be a performance bug
+
+**Open.** After the #5 fix, the retail image reaches discovery round 5 in about
+eight minutes, against roughly fifty before. Round 5 is then still the holdout,
+which means it has a *different* problem that laziness did not touch.
+
+Round 5 disassembles the 1,472 targets that fell out of the data-pointer scan's
+follow-on. For scale, the initial 4,917 candidates now take about five minutes,
+so 1,472 ought to take a minute and a half.
+
+**Hypothesis, to be tested against the oracle, not acted on yet:** those targets
+are largely *data* misidentified as code. Recursive descent over garbage
+wanders — `disassemble_function` will follow a bogus jump up to 1 MB away
+(`abs(target - start_va) < 0x100000`), so a single bogus "function" can
+accumulate an enormous number of block leaders and each one is real decode work
+now, not waste.
+
+If that is right, it is not primarily a speed bug — it means the data-pointer
+scan is over-firing, which makes **#3 wrong** rather than merely unverified, and
+would inflate the function count in a way that corrupts everything downstream.
+That is exactly the failure mode this project was built to catch, and the oracle
+settles it.
 
 ## The oracle
 
@@ -77,11 +129,12 @@ analysis/oracle_truth.json`.
 actually patches. The risk is that 18 is a floor: sites reached by computed
 address would not appear in an absolute-reference count.
 
-**#3** is the highest-value open item and is now blocked only by #5. If the data
-scan over-fires on non-code pointers, 4,223 is inflated and the function count is
-wrong in a way that would quietly corrupt every downstream stage. Note this cuts
-both ways — the same measurement is also the argument that the data-scan round is
-mandatory for C++ targets, so getting it right matters twice.
+**#3** is the highest-value open item, and #6 now gives us a concrete reason to
+doubt it rather than merely to verify it. If the data scan over-fires on non-code
+pointers, 4,223 is inflated and the function count is wrong in a way that would
+quietly corrupt every downstream stage. Note this cuts both ways — the same
+measurement is also the argument that the data-scan round is mandatory for C++
+targets, so getting it right matters twice.
 
 **#4** is a claim from linear sweep with resume, which decodes some data as
 instructions. The counts are upper bounds; the *zeros* are the reliable part,
