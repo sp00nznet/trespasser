@@ -13,7 +13,7 @@ not yet checked).
 |---|------|----------------------|--------|---------|-----------------|
 | 1 | *(inference)* | `SelfMod` is not a JIT: static code, exec+write because the renderer pokes constants into rasteriser span loops | Reference build config names self-modifying asm in `DrawSubTriangle` / `ScreenRenderDWI` | **confirmed** | — |
 | 2 | `disasm32.py` | ~18 patchable rasteriser routines (18 distinct `.text` → `SelfMod` references) | not yet checked | **open** | — |
-| 3 | `disasm32.py` | 4,223 functions reachable only via data pointers — a direct-call-only pass would miss about half a C++ binary | oracle stood up; see #6, which casts doubt on this | **open** | — |
+| 3 | `disasm32.py` | 4,223 functions reachable only via data pointers — a direct-call-only pass would miss 38% of a C++ binary | oracle stood up; see #6, which casts doubt on this | **open** | — |
 | 4 | ISA sweep | The P6 build is pure x87 — no MMX, SSE or 3DNow! | not yet checked | **open** | — |
 | 5 | `disasm32.py` | Predicted superlinear rework in the fixpoint | Measured: O(code^1.10), a constant-factor problem instead | **wrong** | **fixed** — lazy decode, ~20× faster, identical output (pcrecomp `e9d96cb`) |
 | 6 | `disasm32.py` | Round 5 is still slow post-fix; possibly the data scan over-firing on non-code | not yet checked | **open** | — |

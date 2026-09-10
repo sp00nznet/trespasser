@@ -78,13 +78,15 @@ Two follow-up measurements landed with it:
 
 ---
 
-## Phase 1 — Disassembly and function recovery
+## Phase 1 — Disassembly and function recovery ✅
 
 **Goal:** a function catalog covering `.text` and `SelfMod`, with boundaries we
 trust.
 
-- [ ] Run `disasm32.py` over `.text` to convergence; record function count,
-      instruction count, and unresolved indirect-call sites.
+- [x] ~~Run `disasm32.py` over `.text` to convergence.~~ **Done**, in 12.7
+      minutes after the #5 fix (it had not converged in 3h20m before it):
+      **11,122 functions**, 1,819,212 instructions, **99.7% byte coverage**,
+      6 discovery rounds, 4,223 of them reachable only via data pointers.
 - [ ] Disassemble `SelfMod` separately and identify its function boundaries.
 - [ ] Cross-check boundaries against Ghidra headless (`DumpBounds.java`) — two
       independent recoveries agreeing is the cheapest confidence available.
@@ -256,9 +258,9 @@ Where most of the calendar time goes, on every project, always.
 
 ## Order of work, next six things
 
-1. Finish the `.text` disassembly, get the function count. *(running — 4,917
-   candidates from call targets and prologues, plus 4,223 found only via data
-   pointers; the sweep is slow)*
+1. Score the 11,122 recovered functions against the oracle's 34,184 known
+   addresses. Settles scorecard #3 and #6 — whether the data-pointer scan is
+   finding real functions or manufacturing them.
 2. Confirm the 18 `SelfMod` entry points are entry points, and find the patch
    offsets inside each one. This is the project's one real risk and it now looks
    about twenty routines wide.

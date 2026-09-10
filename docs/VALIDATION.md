@@ -170,14 +170,14 @@ prologue patterns found 4,917 candidates. The subsequent data-pointer scan found
 **4,223 functions reachable only via data pointers** — no direct `call` anywhere
 in the image reaches them.
 
-**Why it matters:** those are virtual methods, reached through vtables. In a C++
-binary with 512 classes, a function-recovery pass built only on direct calls
-would miss roughly half the program. This is a measurable claim about tool
-behaviour on a real target, and it is the strongest argument yet for the
+**Why it matters:** those are virtual methods, reached through vtables. Against
+the final count of 11,122 recovered functions, that is **38% of the program** a
+direct-call-only pass would never see — the strongest argument yet for the
 data-scan round being non-optional rather than a nice-to-have.
 
 **Still to check:** whether 4,223 is *right*. The data scan could be over-firing
-on non-code pointers. The PDB oracle settles it.
+on non-code pointers, and scorecard #6 gives a concrete reason to suspect it
+does. The oracle settles it.
 
 ## Scorecard
 

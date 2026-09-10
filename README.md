@@ -46,15 +46,27 @@ Built on the [pcrecomp](https://github.com/sp00nznet/pcrecomp) toolchain.
 function addresses** to score the tooling against. Recipe and the four forced
 deviations are in [VALIDATION](docs/VALIDATION.md#building-the-oracle).
 
-**First hard result, and it is a failure — ours.** `disasm32.py` does not scale.
-On the 2.5 MB retail image it has burned **3h20m of CPU without converging**,
-single-threaded and CPU-bound, with later discovery rounds costing several times
-more per candidate than early ones. The oracle binary is 3.5× larger. This
-blocks the audit and every future large PC target, so it gets fixed upstream
-before anything is lifted. Details in [SCORECARD](docs/SCORECARD.md#5--disasm32py-does-not-scale-to-multi-megabyte-binaries).
+**First hard result was a failure — ours — and it is fixed.** `disasm32.py`
+ground for **3h20m on the retail image without converging**. We predicted
+superlinear rework in the fixpoint; measurement said O(code^1.10), essentially
+linear, with a flat and catastrophic constant of ~4 ms per byte of code. The
+cause was `disassemble_at` materialising an 8 KB window of detail-mode
+instruction objects per block leader when every caller breaks out after a
+handful. Yielding instead: **~20× faster, byte-identical output**, shipped
+upstream as pcrecomp `e9d96cb` so all fifteen projects get it.
 
-That is the project working as intended: fifteen projects in, we had never
-measured this.
+**Phase 1 is done.** The same image now converges in **12.7 minutes**:
+
+| | |
+|---|---|
+| Functions recovered | **11,122** (28 thunks, 5,101 leaves) |
+| Instructions | 1,819,212 |
+| Byte coverage | **99.7%** — 2,366,797 of 2,374,517 bytes |
+| Discovery rounds | 6 |
+| Reachable only via data pointers | 4,223 — **38% of the program** a direct-call-only pass would never see |
+
+That is the project working as intended. Fifteen projects in, we had never
+measured any of this.
 
 ## The one hard problem
 
@@ -124,8 +136,8 @@ for weeks.
 **Direct calls are not enough.** Function recovery found 4,917 candidates from
 call targets and prologues, then the data-pointer scan found **4,223 more
 functions reachable only through data pointers** — no direct `call` in the image
-reaches them. Those are virtual methods behind vtables. In a C++ binary with 512
-classes, direct-call-only recovery would miss about half the program. Whether
+reaches them. Those are virtual methods behind vtables. Against the final count of 11,122 recovered functions that is **38% of the
+program** direct-call-only recovery would never see. Whether
 4,223 is *correct* is exactly what the PDB oracle is for.
 
 ### If you just want to play it
@@ -144,7 +156,7 @@ Full detail in [ROADMAP.md](docs/ROADMAP.md). The shape:
 | Phase | What | State |
 |-------|------|-------|
 | 0 | **Reconnaissance** — PE, sections, imports, RTTI, formats | ✅ done |
-| 1 | **Disassembly** — function recovery over `.text` and `SelfMod`, call graph | 🔄 running |
+| 1 | **Disassembly** — function recovery over `.text` and `SelfMod`, call graph | ✅ done |
 | 2 | **Classification** — RTTI hierarchy, vtable recovery, name the binary | ⬜ |
 | 2.5 | **Stand up the oracle** — build the reference tree, dump its PDB, score the front end against it | ⬜ |
 | 3 | **Lifting** — x86-32 → C, x87, and the `SelfMod` patch-site work | ⬜ |
@@ -154,7 +166,8 @@ Full detail in [ROADMAP.md](docs/ROADMAP.md). The shape:
 
 Next five things, in order:
 
-1. Finish `.text` disassembly; get the function count.
+1. Score the recovered functions against the oracle's 34,184 known addresses —
+   settles whether the 4,223 data-pointer functions are real (scorecard #3, #6).
 2. Confirm the 18 `SelfMod` entry points and find the patch offsets inside each.
 3. Parse RTTI into a class hierarchy; recover vtables from the type locators.
 4. Find `WinMain` and the main loop.
