@@ -12,7 +12,7 @@ not yet checked).
 | # | Tool | Claim from the binary | Oracle | Verdict | Upstream change |
 |---|------|----------------------|--------|---------|-----------------|
 | 1 | *(inference)* | `SelfMod` is not a JIT: static code, exec+write because the renderer pokes constants into rasteriser span loops | Reference build config names self-modifying asm in `DrawSubTriangle` / `ScreenRenderDWI` | **confirmed** | — |
-| 2 | `disasm32.py` | ~18 patchable rasteriser routines (18 distinct `.text` → `SelfMod` references) | not yet checked | **open** | — |
+| 2 | *(inference)* | ~18 patchable rasteriser routines (18 distinct `.text` → `SelfMod` references) | Oracle `SelfMod` holds 35 `DrawSubtriangle` template instantiations | **partial** — mechanism exactly right, count was a floor and undercounts | — |
 | 3 | `disasm32.py` | 4,223 functions reachable only via data pointers — a direct-call-only pass would miss 38% of a C++ binary | oracle stood up; see #6, which casts doubt on this | **open** | — |
 | 4 | ISA sweep | The P6 build is pure x87 — no MMX, SSE or 3DNow! | not yet checked | **open** | — |
 | 5 | `disasm32.py` | Predicted superlinear rework in the fixpoint | Measured: O(code^1.10), a constant-factor problem instead | **wrong** | **fixed** — lazy decode, ~20× faster, identical output (pcrecomp `e9d96cb`) |
@@ -107,6 +107,53 @@ would inflate the function count in a way that corrupts everything downstream.
 That is exactly the failure mode this project was built to catch, and the oracle
 settles it.
 
+---
+
+## #2 — the rasteriser is a template matrix. Mechanism right, count low.
+
+**What we claimed from the binary:** ~18 patchable rasteriser routines, from 18
+distinct absolute references in `.text` pointing into `SelfMod`. Stated at the
+time as a floor, because sites reached by a computed address would not appear in
+an absolute-reference count.
+
+**What the oracle shows.** Its `SelfMod` section carries 37 symbols, 35 of them
+instantiations of a single function template — `DrawSubtriangle` — every one
+from `ScreenRenderDWI:DrawSubTriangle.obj`. They are specialised across five
+template axes:
+
+| Axis | Values |
+|------|--------|
+| Gouraud | `CGouraudOn`, `CGouraudOff`, `CGouraudNone`, `CGouraudFog` |
+| Transparency | `CTransparencyOn`, `CTransparencyOff`, `CTransparencyStipple` |
+| Map | `CMapTexture`, `CMapFlat`, `CMapBump`, `CMapShadow`, `CMapShadow32`, `CMapAlphaColour` |
+| Index | `CIndexLinear`, `CIndexPerspective`, `CIndexNone` |
+| ColLookup | `CColLookupOn`, `CColLookupOff`, `CColLookupTerrain`, `CColLookupAlphaTexture`, `CColLookupAlphaWater` |
+
+The full cross product is 1,080; only 35 combinations are actually instantiated.
+Routine sizes run 352 to 3,392 bytes, median 816.
+
+**Verdict: partial.** The mechanism claim was exactly right — one specialised
+span loop per rendering configuration, in a writable code section so constants
+can be poked in. What we did not see from the binary is that the specialisation
+is *two-layer*: C++ templates pick the algorithm at compile time, and
+self-modification patches the constants at run time. And the count was low.
+
+**Why 18 undercounts.** The oracle's `SelfMod` is 58,032 bytes for 35 routines,
+about 1,658 bytes each. The retail section is 39,797 bytes, which at that density
+is roughly 24 routines. So the retail figure is probably low-to-mid twenties, not
+18 — the absolute-reference count missed the ones dispatched through a table.
+The 10 references from `.data` we noted at the time are almost certainly that
+table.
+
+**What this buys Phase 3.** The lifting plan said "find the patch sites and turn
+each patched immediate into a variable". That still holds, but the shape is now
+known: ~24 routines, each a member of a known template family, each small
+(median under a kilobyte). And critically, we can study the mechanism *in the
+oracle with symbols attached* before touching the retail image — a
+`DrawSubtriangle` in the oracle names its own configuration in its mangled
+symbol.
+
+
 ## The oracle
 
 Stood up and working. Recipe and deviations in
@@ -124,10 +171,6 @@ Ground truth is regenerated with `python tools/parse_map.py <map> -o
 analysis/oracle_truth.json`.
 
 ## Notes on open entries
-
-**#2** needs the `SelfMod` disassembly plus a read of what `DrawSubTriangle`
-actually patches. The risk is that 18 is a floor: sites reached by computed
-address would not appear in an absolute-reference count.
 
 **#3** is the highest-value open item, and #6 now gives us a concrete reason to
 doubt it rather than merely to verify it. If the data scan over-fires on non-code
