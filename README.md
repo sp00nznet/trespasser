@@ -68,6 +68,25 @@ parser that invented 25 phantom functions, and a measurement flaw that scored a
 246 KB library-code chunk the map describes with 15 symbols, which made
 precision read 62% instead of 77%.
 
+**Then we found out what that number is worth.** Ghidra 12.0.3 and IDA Pro 9.1
+were run over the same binary against the same ground truth, purely as a
+reference bar. Scored on real compiled code:
+
+| Engine | Recovered | FP | FN | Precision | Recall | F1 |
+|--------|----------:|---:|---:|----------:|-------:|---:|
+| **IDA Pro 9.1** | 26,924 | **1** | **6** | **100.00%** | **99.98%** | **99.99%** |
+| **Ghidra 12.0.3** | 20,767 | 16 | 6,178 | 99.92% | 77.06% | 87.01% |
+| **pcrecomp** | 27,458 | 7,860 | 7,331 | 71.37% | 72.78% | 72.07% |
+
+IDA makes **one** false positive and six misses out of 26,929 functions. So the
+answer is unambiguous: 77% was not respectable, this problem is solvable to
+essentially 100% on this binary, and every one of our 15,191 errors is our
+defect rather than the problem being hard. Both other engines also recover
+`SelfMod` perfectly, 37/37, where we score 27.6%.
+
+That is exactly what a baseline is for, and it is the whole argument for the
+project: we would never have known.
+
 **Phase 1 is done.** The same image now converges in **12.7 minutes**:
 
 | | |
@@ -179,8 +198,9 @@ Full detail in [ROADMAP.md](docs/ROADMAP.md). The shape:
 
 Next five things, in order:
 
-1. Fix the two recovery defects the scoring found: `SelfMod` over-splitting
-   (27.6% precision) and the 1,719 over-split functions in `.text$mn`.
+1. Fix the recovery defects the baseline exposed as avoidable: `SelfMod`
+   over-splitting (27.6% where both other engines score 100%), the 1,719
+   over-split functions in `.text$mn`, and the ~17,000 import thunks we miss.
 2. Confirm the 18 `SelfMod` entry points and find the patch offsets inside each.
 3. Parse RTTI into a class hierarchy; recover vtables from the type locators.
 4. Find `WinMain` and the main loop.

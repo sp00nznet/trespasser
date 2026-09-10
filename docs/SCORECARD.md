@@ -17,6 +17,7 @@ not yet checked).
 | 4 | ISA sweep | The P6 build is pure x87 — no MMX, SSE or 3DNow! | not yet checked | **open** | — |
 | 5 | `disasm32.py` | Predicted superlinear rework in the fixpoint | Measured: O(code^1.10), a constant-factor problem instead | **wrong** | **fixed** — lazy decode, ~20× faster, identical output (pcrecomp `e9d96cb`) |
 | 6 | `disasm32.py` | Round 5 is a separate bug | It converged; round 5 was the same constant applied to the biggest batch | **wrong** — folds into #5 | — |
+| 7 | `disasm32.py` | Is 77% respectable, or bad? | IDA scores **100.00% / 99.98%** on the same binary; Ghidra 99.92% / 77.06% | **bad** — the gap is our defect, not difficulty | needed |
 
 ---
 
@@ -253,6 +254,79 @@ own, which is the measurement actually wanted. Until then: the data-scan round
 finds real functions (recall is high everywhere), but the aggregate 77%
 precision means a meaningful slice of *any* recovered set is suspect, and the
 retail count of 11,122 should be read with that in mind.
+
+
+---
+
+## #7 — the reference bar: IDA makes one mistake, we make 15,191
+
+The comparison that tells us whether 77% was worth defending. Ghidra 12.0.3 and
+IDA Pro 9.1 were run headless over the *same* oracle binary and scored against
+the *same* ground truth.
+
+### Scored on real compiled code (`.text$mn` + `SelfMod`, 26,929 functions)
+
+| Engine | Recovered | TP | FP | FN | Precision | Recall | F1 |
+|--------|----------:|---:|---:|---:|----------:|-------:|---:|
+| **IDA Pro 9.1** | 26,924 | 26,923 | **1** | **6** | **100.00%** | **99.98%** | **99.99%** |
+| **Ghidra 12.0.3** | 20,767 | 20,751 | 16 | 6,178 | 99.92% | 77.06% | 87.01% |
+| **pcrecomp** | 27,458 | 19,598 | **7,860** | **7,331** | 71.37% | 72.78% | 72.07% |
+
+IDA gets one false positive and six misses out of 26,929 functions. Ghidra is
+extremely conservative — near-perfect precision, but it declines to call 6,178
+real functions functions at all.
+
+**The answer is unambiguous: 77% was not respectable.** This problem is solvable
+to essentially 100% on this binary, and we are at 72%. Every one of our 7,860
+false positives and 7,331 misses is our defect, not the problem being hard.
+That settles where effort belongs.
+
+### Why the earlier 77.11% aggregate was flattering
+
+Scoring the whole image gave us 77.11%. On real code it is 71.37%. The
+difference is a definitional artifact, and it cuts in our favour:
+
+`.text$x` holds 5,240 symbols — 2,642 `__ehhandler$` stubs and 2,598
+`__unwindfunclet$` bodies. IDA and Ghidra both count exactly 2,598: they treat
+the unwind funclets as functions and the handler stubs as not. We count both,
+so we score 99.9% recall there against their 49.6%. Nobody is wrong; the three
+tools simply disagree about what a function is. Same story in `.text$di` and
+`.text$yd`, where Ghidra declines to call dynamic initialisers functions at all
+(2.7% and 6.6% recall) while IDA and we both do.
+
+Comparing on `.text$mn` + `SelfMod` removes the disagreement and leaves the
+question we actually care about.
+
+### The three defects, now precisely located
+
+1. **Over-splitting real functions — 7,860 false positives.** IDA has one. We
+   already knew these concentrate in 1,719 functions at ~4.6 spurious starts
+   each; now we know they are entirely avoidable.
+2. **`SelfMod`: both other engines score 37/37, perfectly.** We claim 127
+   starts and get 35 right — 27.6% precision. This is the code Phase 3 must
+   lift, and it is demonstrably not hard to recover correctly. Pure defect.
+3. **Missing a quarter of all functions — 7,331.** IDA misses six.
+
+### And a fourth, outside real code
+
+The excluded plain `.text` chunk turns out to be a thunk table. IDA finds
+**25,614** functions in its 246 KB; we find 8,300 and Ghidra 7,913. At ~9.6
+bytes apiece these are import thunks — 6-byte `jmp` stubs plus padding — and
+IDA is almost certainly right that they are all there. We are missing roughly
+17,000 of them. They are trivial code, but a lifter that does not know they
+exist will not resolve calls through them.
+
+### Consensus as second-tier truth
+
+Where the map is silent, agreement still carries evidence. In that same `.text`
+chunk all three engines agree on **7,905** starts out of a 25,833-address union
+(30.6%). Recorded as second-tier truth per
+[VALIDATION.md](VALIDATION.md#ghidra-and-ida-baselines-not-crutches) — evidence,
+not proof, and never merged into the map's first tier.
+
+Pairwise agreement across all code chunks: pcrecomp∩Ghidra 67.9% Jaccard,
+IDA∩Ghidra 54.9%, pcrecomp∩IDA 47.5%. Our lowest overlap being with the most
+accurate engine is itself a signal.
 
 
 ## The oracle
