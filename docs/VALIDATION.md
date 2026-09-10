@@ -128,6 +128,58 @@ lifted C next to the original function is the only check for that, and it does
 not scale — so it gets spent deliberately, on the physics and the rasterisers,
 not spread thin.
 
+## Ghidra and IDA: baselines, not crutches
+
+Both are installed here, and both get used — but the standing rule is that
+**this project exists to improve our tooling, not to depend on theirs.** Neither
+ever becomes a build dependency, and no pcrecomp stage is allowed to require
+them. They serve two specific purposes and no others.
+
+### 1. A reference bar
+
+Our function recovery scores 77.1% precision against ground truth. That number
+is meaningless on its own — it could be poor work or it could be near the limit
+of what static recovery achieves on a 7 MB optimised C++ binary. Running
+Ghidra 12.0.3 and IDA Pro 9.1 over *the same binary against the same ground
+truth* is what turns it into a judgement:
+
+- If they score ~95%, we have roughly 18 points of defect to go and find.
+- If they score ~80%, most of our gap is the problem being genuinely hard, and
+  effort is better spent elsewhere.
+
+Either answer is worth having, and only one of them justifies more work on the
+recovery pass. This is the difference between optimising and flailing.
+
+### 2. Raising ground-truth coverage
+
+The more interesting use. Our oracle's linker map describes most of the binary
+but not all of it: the plain `.text` chunk is 246 KB of linked-in library code
+with **15 symbols in the entire map**, so 8,300 recovered functions there are
+currently unscoreable and excluded outright. That is a real hole — nearly a
+quarter-megabyte where we cannot tell a hit from a miss.
+
+Three independent engines are three independent opinions. Where all of
+pcrecomp, IDA and Ghidra agree a function starts at an address the map does not
+name, that agreement is meaningful evidence the function is real: the three use
+different algorithms, and their errors are unlikely to coincide precisely.
+Consensus in the unsymbolised region **extends the ground truth** into it.
+
+The care needed here is obvious and worth stating: consensus is evidence, not
+proof. Three tools can share a blind spot — all three might follow the same
+misleading pattern, and all three descend from the same broad tradition of
+recursive descent plus prologue matching. So a consensus-derived truth set is
+recorded as a *second tier*, always distinguishable from the linker map's
+first-tier truth, and never silently merged into it.
+
+### What is off-limits
+
+- Neither becomes a runtime or build dependency of any pcrecomp stage.
+- Neither is used to *produce* the recompilation — no importing their function
+  boundaries into the lifter to paper over ours. Copying their answers would
+  make the scorecard measure nothing.
+- Where they beat us, the deliverable is a diagnosis and a fix in our own tool,
+  recorded in [SCORECARD.md](SCORECARD.md) — not a dependency.
+
 ## The discipline: predict, then look
 
 This only means anything if we write down the binary-derived answer **before**
