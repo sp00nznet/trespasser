@@ -2,105 +2,175 @@
 """Score disasm32's function recovery against the oracle's ground truth.
 
 The oracle (docs/VALIDATION.md) is the reference source built with MSVC and
-linked with /MAP, so we know every function's real address. Point the same
-disassembler at that binary and this measures how much it actually gets right.
+linked with /MAP, so we know every function's real address.
 
   python tools/parse_map.py <trespass.map> -o analysis/oracle_truth.json
   python <pcrecomp>/tools/disasm/disasm32.py trespass.exe -o analysis/oracle_functions.json
-  python tools/score_recovery.py
+  python tools/score_recovery.py --map <trespass.map>
 
-Comparison is on function *start addresses*, which is what both sides agree on:
-the linker map gives starts, and recursive descent finds starts. Sizes would
-need the PDB.
+Scoring is per map CODE chunk, and chunks the linker map barely describes are
+excluded from the aggregate rather than counted as tool error. That matters:
+the plain `.text` chunk is a quarter-megabyte of linked-in library code with
+almost no symbols, so scoring it would charge the tool ~8,300 false positives
+for finding functions the ground truth simply does not know about. Absence of a
+symbol is not evidence of absence of a function.
+
+Comparison is on function *start addresses* — what both sides agree on. Sizes
+would need the PDB.
 """
 import argparse
+import bisect
 import json
+import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# " 0001:00000000 0003c170H .text                   CODE"
+CHUNK_RE = re.compile(r"^\s*([0-9a-fA-F]{4}):([0-9a-fA-F]{8})\s+([0-9a-fA-F]+)H\s+(\S+)\s+(CODE|DATA)\s*$")
+
+# Below this many symbols per KB, we treat a chunk as undescribed by the map.
+#
+# The gap in the data is stark rather than marginal, so this is a judgment call
+# made explicit rather than a tuned parameter. Measured densities:
+#
+#   .text$di  26.3/KB   .text$x  29.1/KB   .text$yd  28.0/KB
+#   .text$mn   3.8/KB   SelfMod   0.65/KB  .text     0.06/KB
+#
+# SelfMod is legitimately sparse -- 37 symbols for a section of ~1.6 KB
+# routines -- and is scored. The plain `.text` chunk has 15 symbols across
+# 246 KB, and those 15 are the Smacker import thunks; the rest is linked-in
+# library code the map never enumerates. Fifteen symbols is not a description
+# of a quarter-megabyte, so scoring the 8,300 functions found there would
+# charge the tool for ground truth we do not have.
+MIN_DENSITY = 0.5
+
 
 def load(path, what):
-    p = ROOT / path
+    p = Path(path) if Path(path).is_absolute() else ROOT / path
     if not p.exists():
         sys.exit(f"missing {what}: {p}")
     return json.loads(p.read_text())
+
+
+def code_chunks(map_path, sect_base):
+    """CODE chunks from the map header, as (name, start_va, end_va)."""
+    out = []
+    for line in Path(map_path).read_text(errors="replace").splitlines():
+        m = CHUNK_RE.match(line)
+        if not m or m.group(5) != "CODE":
+            continue
+        sect = int(m.group(1), 16)
+        if sect not in sect_base:
+            continue
+        start = sect_base[sect] + int(m.group(2), 16)
+        out.append((m.group(4), start, start + int(m.group(3), 16)))
+    return sorted(out, key=lambda c: c[1])
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--truth", default="analysis/oracle_truth.json")
     ap.add_argument("--recovered", default="analysis/oracle_functions.json")
-    ap.add_argument("--show", type=int, default=10, help="sample N of each error class")
+    ap.add_argument("--map", default="_work/oracle-build/cmake/trespass/Release/trespass.map")
+    ap.add_argument("--show", type=int, default=0)
     args = ap.parse_args()
 
     truth = load(args.truth, "ground truth (run tools/parse_map.py)")
     rec = load(args.recovered, "recovered functions (run disasm32.py)")
 
     truth_names = {f["va"]: f["names"] for f in truth["functions"]}
-    rec_addrs = {f["address"] for f in rec["functions"]}
+    tv = sorted(truth_names)
+    rv = sorted({f["address"] for f in rec["functions"]})
+    tset = set(tv)
 
-    # disasm32 only walks the code range it computed. Anything outside that is
-    # not a miss the tool can be blamed for, so score inside the intersection.
-    lo, hi = rec["code_start"], rec["code_end"]
-    truth_in = {va for va in truth_names if lo <= va < hi}
-    rec_in = {a for a in rec_addrs if lo <= a < hi}
-    truth_out = len(truth_names) - len(truth_in)
+    # Locate each code section's base from the truth addresses we have for it.
+    # Section 1 starts at the tool's code_start; section 2 we infer from the map
+    # chunk offsets against the highest-addressed truth symbols.
+    sect_base = {}
+    for f in truth["functions"]:
+        pass
+    # Simpler and robust: derive per-section base by matching the map's own
+    # section:offset pairs against Rva+Base, done in parse_map. Recompute here
+    # from the first chunk of each section.
+    base = truth["image_base"]
+    raw = Path(args.map).read_text(errors="replace").splitlines()
+    for line in raw:
+        m = CHUNK_RE.match(line)
+        if m and m.group(5) == "CODE":
+            sect = int(m.group(1), 16)
+            sect_base.setdefault(sect, None)
+    # Section 1 base: tool's code_start. Section 2 base: from a SelfMod symbol.
+    sect_base[1] = rec["code_start"]
+    for line in raw:
+        mm = re.match(r"^\s*0002:([0-9a-fA-F]{8})\s+\S+\s+([0-9a-fA-F]{8})\s", line)
+        if mm:
+            sect_base[2] = int(mm.group(2), 16) - int(mm.group(1), 16)
+            break
 
-    tp = truth_in & rec_in
-    fn = truth_in - rec_in       # real functions the tool never found
-    fp = rec_in - truth_in       # addresses the tool called functions and aren't
+    chunks = code_chunks(args.map, sect_base)
 
-    precision = len(tp) / len(rec_in) if rec_in else 0.0
-    recall = len(tp) / len(truth_in) if truth_in else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+    print(f"ground truth  {len(tv):,} functions   recovered  {len(rv):,}\n")
+    hdr = f"{'chunk':10} {'bytes':>10} {'truth':>7} {'rec':>7} {'tp':>7} {'fp':>7} {'fn':>7}  {'prec':>7} {'recall':>7}"
+    print(hdr)
+    print("-" * len(hdr))
 
-    print(f"code range          0x{lo:08X} - 0x{hi:08X}")
-    print(f"ground truth        {len(truth_names):,} functions "
-          f"({len(truth_in):,} in range, {truth_out:,} outside)")
-    print(f"recovered           {len(rec_addrs):,} functions ({len(rec_in):,} in range)")
-    print()
-    print(f"  true positives    {len(tp):,}")
-    print(f"  false negatives   {len(fn):,}   (real functions missed)")
-    print(f"  false positives   {len(fp):,}   (invented -- not a function start)")
-    print()
-    print(f"  precision         {precision:6.2%}")
-    print(f"  recall            {recall:6.2%}")
-    print(f"  F1                {f1:6.2%}")
+    agg = {"tp": 0, "fp": 0, "fn": 0, "rec": 0, "truth": 0}
+    excluded = []
+    for nm, a, b in chunks:
+        t = [x for x in tv if a <= x < b]
+        r = [x for x in rv if a <= x < b]
+        tp = sum(1 for x in r if x in tset)
+        fp, fn = len(r) - tp, len(t) - tp
+        density = len(t) / max((b - a) / 1024, 1)
+        prec = tp / len(r) if r else 0
+        recl = tp / len(t) if t else 0
+        mark = ""
+        if density < MIN_DENSITY:
+            mark = "  <- excluded, map has no symbols here"
+            excluded.append((nm, len(r)))
+        else:
+            for k, v in (("tp", tp), ("fp", fp), ("fn", fn),
+                         ("rec", len(r)), ("truth", len(t))):
+                agg[k] += v
+        print(f"{nm:10} {b-a:>10,} {len(t):>7,} {len(r):>7,} {tp:>7,} {fp:>7,} {fn:>7,}  "
+              f"{prec:>6.1%} {recl:>7.1%}{mark}")
 
-    # A false positive landing *inside* a real function is a different error
-    # from one landing in data: the first is a split, the second is garbage.
-    starts = sorted(truth_in)
-    import bisect
+    p = agg["tp"] / agg["rec"] if agg["rec"] else 0
+    r_ = agg["tp"] / agg["truth"] if agg["truth"] else 0
+    f1 = 2 * p * r_ / (p + r_) if (p + r_) else 0
+
+    print(f"\nAggregate over map-described chunks only:")
+    print(f"  true positives   {agg['tp']:,}")
+    print(f"  false positives  {agg['fp']:,}")
+    print(f"  false negatives  {agg['fn']:,}")
+    print(f"  precision        {p:.2%}")
+    print(f"  recall           {r_:.2%}")
+    print(f"  F1               {f1:.2%}")
+    if excluded:
+        tot = sum(n for _, n in excluded)
+        print(f"\n  excluded: {', '.join(n for n, _ in excluded)} "
+              f"({tot:,} recovered functions unverifiable -- no symbols in the map)")
+
+    # Classify the false positives that remain: a split inside a known function
+    # is a different defect from an address invented in data.
+    fps = [x for x in rv if x not in tset
+           and any(a <= x < b for nm, a, b in chunks
+                   if nm not in {n for n, _ in excluded})]
+    starts = tv
     inside = 0
-    for a in fp:
-        i = bisect.bisect_right(starts, a) - 1
+    for x in fps:
+        i = bisect.bisect_right(starts, x) - 1
         if i >= 0:
             inside += 1
-    print()
-    print(f"  of the false positives, {inside:,} fall at or after some real "
-          f"function start\n  (candidate mid-function splits) and "
-          f"{len(fp) - inside:,} fall before any (garbage)")
+    print(f"\n  of {len(fps):,} false positives, {inside:,} land after some known "
+          f"function start\n  (mid-function splits) and {len(fps)-inside:,} before any (invented in data)")
 
-    if args.show:
-        print(f"\nsample missed functions (first {args.show}):")
-        for va in sorted(fn)[:args.show]:
-            print(f"  0x{va:08X}  {truth_names[va][0][:70]}")
-        print(f"\nsample invented addresses (first {args.show}):")
-        for a in sorted(fp)[:args.show]:
-            print(f"  0x{a:08X}")
-
-    out = {
-        "code_start": lo, "code_end": hi,
-        "truth_total": len(truth_names), "truth_in_range": len(truth_in),
-        "recovered_total": len(rec_addrs), "recovered_in_range": len(rec_in),
-        "true_positives": len(tp), "false_negatives": len(fn),
-        "false_positives": len(fp),
-        "precision": precision, "recall": recall, "f1": f1,
-        "fp_inside_known_function": inside,
-    }
-    (ROOT / "analysis/recovery_score.json").write_text(json.dumps(out, indent=1))
+    (ROOT / "analysis/recovery_score.json").write_text(json.dumps({
+        "precision": p, "recall": r_, "f1": f1, **agg,
+        "excluded_chunks": excluded,
+    }, indent=1))
     print("\nwrote analysis/recovery_score.json")
 
 

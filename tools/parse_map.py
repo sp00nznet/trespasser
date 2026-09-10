@@ -49,6 +49,12 @@ def parse(path):
                 # function. Data symbols have no f. Keep only functions.
                 tail = m.group(5)
                 flags = tail.split()[0] if tail.split() else ""
+                # The static table carries unresolved thunks -- __ehhandler$ and
+                # friends -- with a nonsense section offset (0001:fffff000) and an
+                # Rva+Base of the image base itself. Taking those at face value
+                # manufactures phantom functions at 0x400000. Drop them.
+                if int(m.group(4), 16) == base or int(m.group(2), 16) > 0x7F000000:
+                    continue
                 syms.append({
                     "sect": int(m.group(1), 16),
                     "va": int(m.group(4), 16),

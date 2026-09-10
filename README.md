@@ -55,6 +55,19 @@ instruction objects per block leader when every caller breaks out after a
 handful. Yielding instead: **~20× faster, byte-identical output**, shipped
 upstream as pcrecomp `e9d96cb` so all fifteen projects get it.
 
+**And the tooling has now been scored against ground truth.** Pointed at the
+oracle, `disasm32` recovers function starts at **77.1% precision / 78.5%
+recall** — but that average hides the shape: 95–99.7% on exception tables and
+initialisers, **71.6% on the 7.3 MB of actual game code**, and **27.6% on
+`SelfMod`**, the very code Phase 3 has to lift. The false positives are
+concentrated rather than diffuse: 5% of functions absorb nearly all of them, at
+~4.6 spurious starts each. Full table in [SCORECARD](docs/SCORECARD.md#3--function-recovery-scored-against-ground-truth).
+
+Getting an honest number took two corrections first — a bug in our own map
+parser that invented 25 phantom functions, and a measurement flaw that scored a
+246 KB library-code chunk the map describes with 15 symbols, which made
+precision read 62% instead of 77%.
+
 **Phase 1 is done.** The same image now converges in **12.7 minutes**:
 
 | | |
@@ -166,8 +179,8 @@ Full detail in [ROADMAP.md](docs/ROADMAP.md). The shape:
 
 Next five things, in order:
 
-1. Score the recovered functions against the oracle's 34,184 known addresses —
-   settles whether the 4,223 data-pointer functions are real (scorecard #3, #6).
+1. Fix the two recovery defects the scoring found: `SelfMod` over-splitting
+   (27.6% precision) and the 1,719 over-split functions in `.text$mn`.
 2. Confirm the 18 `SelfMod` entry points and find the patch offsets inside each.
 3. Parse RTTI into a class hierarchy; recover vtables from the type locators.
 4. Find `WinMain` and the main loop.

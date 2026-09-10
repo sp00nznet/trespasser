@@ -13,10 +13,10 @@ not yet checked).
 |---|------|----------------------|--------|---------|-----------------|
 | 1 | *(inference)* | `SelfMod` is not a JIT: static code, exec+write because the renderer pokes constants into rasteriser span loops | Reference build config names self-modifying asm in `DrawSubTriangle` / `ScreenRenderDWI` | **confirmed** | — |
 | 2 | *(inference)* | ~18 patchable rasteriser routines, counted by absolute `.text` → `SelfMod` references | Oracle holds 35 `DrawSubtriangle` instantiations; re-measuring retail by direct `call rel32` gives **33** | **partial** — mechanism exactly right, counting method was structurally blind | — |
-| 3 | `disasm32.py` | 4,223 functions reachable only via data pointers — a direct-call-only pass would miss 38% of a C++ binary | oracle stood up; see #6, which casts doubt on this | **open** | — |
+| 3 | `disasm32.py` | Function recovery is trustworthy | Scored against 34,159 known addresses: **P 77.1% / R 78.5% / F1 77.8%** | **partial** — good on some chunks, poor on the game code and bad on `SelfMod` | needed |
 | 4 | ISA sweep | The P6 build is pure x87 — no MMX, SSE or 3DNow! | not yet checked | **open** | — |
 | 5 | `disasm32.py` | Predicted superlinear rework in the fixpoint | Measured: O(code^1.10), a constant-factor problem instead | **wrong** | **fixed** — lazy decode, ~20× faster, identical output (pcrecomp `e9d96cb`) |
-| 6 | `disasm32.py` | Round 5 is still slow post-fix; possibly the data scan over-firing on non-code | not yet checked | **open** | — |
+| 6 | `disasm32.py` | Round 5 is a separate bug | It converged; round 5 was the same constant applied to the biggest batch | **wrong** — folds into #5 | — |
 
 ---
 
@@ -84,11 +84,14 @@ gets it.
 
 ---
 
-## #6 — discovery round 5 is still slow, and it may not be a performance bug
+## #6 — round 5 was not a separate bug. **Resolved: our hypothesis was wrong.**
 
-**Open.** After the #5 fix, the retail image reaches discovery round 5 in about
-eight minutes, against roughly fifty before. Round 5 is then still the holdout,
-which means it has a *different* problem that laziness did not touch.
+We guessed round 5 had its own defect because it remained the holdout after the
+#5 fix. It did not. The retail image converged in 12.7 minutes total; round 5
+was simply the largest batch of candidates paying the same flat constant, and it
+cleared once decoding went lazy. Folded into #5.
+
+Original note, kept for the record:
 
 Round 5 disassembles the 1,472 targets that fell out of the data-pointer scan's
 follow-on. For scale, the initial 4,917 candidates now take about five minutes,
@@ -170,6 +173,87 @@ family, median well under a kilobyte, all reached by direct calls from 267 known
 sites. The patch sites can be studied in the oracle with symbols attached — each
 routine names its own configuration in its mangled symbol — before the retail
 image is touched.
+
+---
+
+## #3 — function recovery scored against ground truth
+
+The headline result of the audit so far. `disasm32` was pointed at the oracle
+binary and its 43,064 recovered function starts compared against the map's
+34,159 known ones.
+
+### Scoring honestly took two corrections first
+
+Both are worth recording, because the first numbers this produced were wrong in
+opposite directions.
+
+**A bug in our own parser.** The map's static-symbol table carries unresolved
+thunks — `__ehhandler$`, `__ehfuncinfo$` — with a nonsense section offset
+(`0001:fffff000`) and an `Rva+Base` equal to the image base. `parse_map.py` took
+those at face value and manufactured 25 phantom functions at `0x400000`, and
+inflated the symbol count by four thousand. Fixed; ground truth went from a
+claimed 34,184 to a real 34,159.
+
+**A flaw in the measurement.** The plain `.text` chunk is 246 KB of linked-in
+library code with **15 symbols in the whole map**, and those 15 are the Smacker
+import thunks. The tool finds 8,300 functions there. Scored naively, every one
+counts as a false positive and precision reads 62.25% — but absence of a symbol
+is not evidence of absence of a function. That chunk is now excluded and said
+so out loud. Scoring only where the map actually describes the binary gives
+**77.11%**.
+
+### The numbers
+
+| Chunk | Bytes | Truth | Recovered | TP | FP | FN | Precision | Recall |
+|-------|------:|------:|----------:|---:|---:|---:|----------:|-------:|
+| `.text` | 246,128 | 15 | 8,300 | — | — | — | *excluded* | *excluded* |
+| `.text$di` | 49,920 | 1,281 | 1,345 | 1,281 | 64 | 0 | 95.2% | 100.0% |
+| `.text$mn` | 7,329,504 | 26,892 | 27,331 | 19,563 | 7,768 | 7,329 | **71.6%** | **72.7%** |
+| `.text$x` | 184,080 | 5,240 | 5,265 | 5,235 | 30 | 5 | 99.4% | 99.9% |
+| `.text$yd` | 25,418 | 694 | 696 | 694 | 2 | 0 | 99.7% | 100.0% |
+| `SelfMod` | 58,032 | 37 | 127 | 35 | 92 | 2 | **27.6%** | 94.6% |
+| **Aggregate** | | **34,144** | **34,764** | **26,808** | **7,956** | **7,336** | **77.11%** | **78.51%** |
+
+F1 **77.81%**.
+
+### What that actually means
+
+**The tool is excellent on structured chunks and mediocre on the code that
+matters.** `.text$x`, `.text$yd` and `.text$di` — exception tables, dynamic
+initialisers — score 95–99.7%. `.text$mn`, which is the 7.3 MB of actual game
+code, scores 71.6% precision and 72.7% recall. About one in four recovered
+functions there is not a function, and about one in four real functions is
+never found.
+
+**`SelfMod` is the worst chunk in the binary: 27.6% precision.** The tool finds
+127 function starts where 37 exist. Recall is fine at 94.6% — it finds nearly
+all the real ones — but it shreds each rasteriser into roughly three and a half
+pieces. That is a pointed result given Phase 3 has to lift exactly this code,
+and it is consistent with what these routines are: templated span loops full of
+computed jumps, with constants that get patched at run time.
+
+**The false positives are concentrated, not diffuse.** Of 7,864 spurious starts
+in the scored `.text` chunks, only 2.1% sit within 16 bytes of a real function
+start; the median is 902 bytes in. They fall inside just **1,719 distinct real
+functions — 5% of the binary — at a mean of 4.6 spurious starts each.**
+
+That last number is the most useful thing here. The tool is not hallucinating
+functions across the image; it is over-splitting a small minority of large,
+control-flow-heavy functions, almost certainly at basic-block boundaries it
+mistakes for entry points. A defect concentrated in 5% of functions is
+tractable in a way that a diffuse 23% error rate would not be.
+
+### What is still open
+
+The original #3 claim was specifically about the **4,223 retail functions
+reachable only via data pointers**. This scoring measures the tool overall, not
+that subset, because the JSON does not record how each function was discovered.
+Adding a provenance field upstream would let us score the data-scan round on its
+own, which is the measurement actually wanted. Until then: the data-scan round
+finds real functions (recall is high everywhere), but the aggregate 77%
+precision means a meaningful slice of *any* recovered set is suspect, and the
+retail count of 11,122 should be read with that in mind.
+
 
 ## The oracle
 
