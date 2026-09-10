@@ -132,12 +132,20 @@ and we have a ranked list of what must be lifted versus what can be shimmed.
 
 Runs in parallel with Phase 2; it gates the scoring, not the lifting.
 
-- [ ] Build the community tree's CMake project with debug info. Record what it
-      took — a build that needs heroics is a build we cannot re-run per commit.
-- [ ] Dump the PDB to a ground-truth table: function name, address, size, source
-      file, line. This is the oracle.
+- [x] ~~Build the reference tree with debug info.~~ **Done.** `trespass.exe`
+      (8.8 MB, 32-bit) plus a 52 MB PDB and an 8.9 MB linker map. Four forced
+      deviations, all recorded in [VALIDATION](VALIDATION.md#building-the-oracle);
+      none touch engine C++. Use `Release`, which is both the config with debug
+      info and the one that targets PentiumPro — the same variant as our target.
+- [x] ~~Dump a ground-truth table.~~ **Done.** `tools/parse_map.py` reads the
+      linker map (plain text, no PDB parser needed): **34,184 distinct function
+      addresses**, 9,995 of them static. The PDB is kept for function *sizes*.
 - [ ] Run the full pcrecomp front end (`pe_analyze` → `disasm32` → `callgraph` →
-      `classify`) over *that* binary and score every stage against the PDB.
+      `classify`) over *that* binary and score every stage against the map.
+      **Blocked on scorecard #5** — `disasm32` has not converged on a 2.5 MB
+      image in 3h20m of CPU, and the oracle binary is 3.5× larger.
+- [ ] **Fix `disasm32` scaling first.** Profile the `find_functions` fixpoint,
+      confirm the superlinear-rework hypothesis, fix upstream in pcrecomp.
 - [ ] Write the numbers into [SCORECARD.md](SCORECARD.md); fix what is broken
       upstream in pcrecomp before lifting anything.
 - [ ] Settle the open scorecard entries this can settle — in particular #3, the

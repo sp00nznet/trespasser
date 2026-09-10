@@ -44,6 +44,70 @@ That gives us the missing half of the loop: run the tools on a binary where we
 know the answer, measure the error, fix the tools, then run them on the retail
 binary where we do not.
 
+## Building the oracle
+
+It builds. Here is exactly what it took, because a recipe that needs heroics is
+one we cannot re-run per commit — and because every deviation from the reference
+build is a caveat on every number the oracle produces.
+
+```bash
+git clone --depth 1 https://github.com/OpenTrespasser/JurassicParkTrespasser _ref/jpt
+cd _ref/jpt && git submodule update --init --depth 1
+
+cmake -S _ref/jpt/jp2_pc -B _work/oracle-build -G "Visual Studio 17 2022" -A Win32 \
+      -DUSE_TRESPASSER_DIRECTORY=FALSE \
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+      -DCMAKE_EXE_LINKER_FLAGS=/MAP
+cmake --build _work/oracle-build --config Release --target trespass
+```
+
+Requires Visual Studio 2022 with the **x86** toolset. Takes a few minutes.
+
+**Use the `Release` configuration, not `Debug`.** The reference build defines
+`TARGET_PROCESSOR=PROCESSOR_PENTIUMPRO` for Release and Final, and
+`PROCESSOR_PENTIUM` for Debug — and its own comment explains that Release was
+turned into `RelWithDebInfo` specifically so it keeps debug info. So Release is
+simultaneously the config with symbols *and* the config that matches
+`tpassp6.exe`'s processor variant. That is a lucky alignment and we should take
+it.
+
+### Deviations from the reference build
+
+Three, all forced, all recorded here because they qualify every number the
+oracle produces. They live in `_ref/` which is gitignored, so a fresh clone does
+not carry them — re-apply if you rebuild.
+
+| # | Change | Why | Risk to the oracle |
+|---|--------|-----|--------------------|
+| 1 | `CMAKE_MFC_FLAG` 2 → 0 in `cmake/CMakeCommon.cmake` | The flag is set once, globally, for every target — inherited from the 1998 build where the editor used MFC. Without the VS MFC component installed, all 13 engine libraries fail to configure. | Low. Exactly one file in the engine libraries references MFC at all (`Source/Lib/W95/Errors.rc`), and it is a resource script. No engine C++ includes `afxwin`. Changes linkage, not codegen. |
+| 2 | `#include "afxres.h"` → `windows.h` in 13 `.rc` files | Follows from #1: `afxres.h` ships with MFC. `windows.h` supplies the same standard resource symbols. | None for our purposes. Resource scripts do not affect function boundaries. |
+| 3 | `#define IDC_STATIC (-1)` added to those same `.rc` files | The one symbol `afxres.h` defines that `windows.h` does not. | None. It is the standard value. |
+| 4 | `CMAKE_POLICY_VERSION_MINIMUM=3.5` | CMake 4.x refuses the vendored googletest's `cmake_minimum_required`. CMake suggests this flag itself. | None. Affects the test framework, not the game. |
+
+None of these touch engine C++, so function boundaries — the thing we are
+scoring — are unaffected. Deviations 2 and 3 exist only because of 1, and 1
+disappears entirely if the VS MFC component is installed; worth doing if we ever
+need the oracle to be byte-faithful rather than boundary-faithful.
+
+### What the oracle gives us
+
+| | |
+|---|---|
+| `trespass.exe` | 8,860,160 bytes, 32-bit |
+| `trespass.map` | 8.9 MB — every symbol, its address, and whether it is a function |
+| `trespass.pdb` | 52 MB — the same plus sizes and line numbers, if we ever get a parser |
+| **Ground truth** | **34,184 distinct function addresses** (36,074 symbols, 1,890 COMDAT-folded, 9,995 static) |
+
+`tools/parse_map.py` turns the map into `analysis/oracle_truth.json`. We used the
+map rather than the PDB for the simple reason that the map is plain text and
+needs no parsing library, while nothing on hand reads a PDB — no `llvm-pdbutil`,
+no `pdbparse`. The PDB is kept because it carries function *sizes*, which the
+map only lets us approximate from consecutive addresses.
+
+One detail worth noting: the oracle binary has a `SelfMod` code section of its
+own, 58,032 bytes. The self-modifying rasteriser architecture is reproduced, so
+it can be studied here with symbols attached before we go near the retail image.
+
 ## What gets measured
 
 | Tool | Question | Metric | Oracle |

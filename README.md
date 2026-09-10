@@ -41,8 +41,20 @@ Built on the [pcrecomp](https://github.com/sp00nznet/pcrecomp) toolchain.
   addresses in `.text` reach into it**, so this is about twenty patchable
   routines, not hundreds of scattered sites.
 
-Phase 1 (disassembly and function recovery) is running — 4,917 function
-candidates found so far from call targets and prologue patterns.
+**The oracle is up.** The reference tree builds: `trespass.exe` (8.8 MB,
+32-bit) with a 52 MB PDB and an 8.9 MB linker map, giving **34,184 known
+function addresses** to score the tooling against. Recipe and the four forced
+deviations are in [VALIDATION](docs/VALIDATION.md#building-the-oracle).
+
+**First hard result, and it is a failure — ours.** `disasm32.py` does not scale.
+On the 2.5 MB retail image it has burned **3h20m of CPU without converging**,
+single-threaded and CPU-bound, with later discovery rounds costing several times
+more per candidate than early ones. The oracle binary is 3.5× larger. This
+blocks the audit and every future large PC target, so it gets fixed upstream
+before anything is lifted. Details in [SCORECARD](docs/SCORECARD.md#5--disasm32py-does-not-scale-to-multi-megabyte-binaries).
+
+That is the project working as intended: fifteen projects in, we had never
+measured this.
 
 ## The one hard problem
 
